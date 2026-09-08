@@ -42,8 +42,9 @@ import torch
 import torch.nn.functional as F
 from jaxtyping import Float
 from tensordict import TensorDict
-
 from utils import FieldType, align_scalar_shapes, field_dim, validate_field_coverage
+
+from physicsnemo.datapipes.keys import as_nested_key
 
 _LOGGER = logging.getLogger("training.loss")
 
@@ -115,7 +116,7 @@ def _vector_loss(
         target_sq = torch.mean(target**2, dim=tuple(range(pred.ndim - 1)))
         return torch.sum(diff_sq / (target_sq + eps))
 
-    total = torch.tensor(0.0, device=pred.device, dtype=pred.dtype)
+    total = torch.zeros((), device=pred.device, dtype=pred.dtype)
     for i in range(n_components):
         p, t = pred[..., i], target[..., i]
         if loss_type == "huber":
@@ -249,8 +250,9 @@ class LossCalculator:
         """
         validate_field_coverage(self.target_config, pred, target)
 
-        ### Find a tensor we can use to seed the accumulator's dtype/device.
-        any_pred = next(iter(pred.values()))
+        ### Find a leaf tensor (descending into nested groups) to seed the
+        ### accumulator's dtype/device.
+        any_pred = next(iter(pred.values(include_nested=True, leaves_only=True)))
         total_loss = torch.zeros((), device=any_pred.device, dtype=any_pred.dtype)
         ### Build the per-field bag as a plain dict during the loop so the
         ### inner ``loss_dict[key] = ...`` assignment stays simple, then
@@ -259,7 +261,10 @@ class LossCalculator:
         loss_dict: dict[str, torch.Tensor] = {}
 
         for name, field_type in self.target_config.items():
-            p, t = pred[name], target[name]
+            ### ``name`` may spell a nested leaf ("solution.p"); the loss
+            ### key keeps the config spelling while the lookup is nested.
+            key = as_nested_key(name)
+            p, t = pred[key], target[key]
             if field_type == "scalar":
                 ### Caller may pass scalar fields as (..., 1) or (...);
                 ### normalize to a single shape so the loss is shape-agnostic.
